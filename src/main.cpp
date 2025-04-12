@@ -29,7 +29,6 @@
 #include "SD_MMC.h"
 #include "driver/ledc.h"
 #include <ArduinoJson.h>
-#include <PubSubClient.h>
 
 #define CAMERA_MODEL_AI_THINKER
 
@@ -38,19 +37,9 @@
 // Flash LED pin (4 cho ESP32-CAM AI-Thinker)
 #define FLASH_LED_PIN 4
 
-// WiFi credentials
-const char *ssid = "AEPTIT";
-const char *password = "20242024";
-
-// MQTT Configuration
-const char* mqtt_server = "192.168.1.13";  // MQTT broker IP
-const int mqtt_port = 1883;                // MQTT port
-const char* mqtt_user = "";                // MQTT username (if required)
-const char* mqtt_password = "";            // MQTT password (if required)
-const char* mqtt_topic = "esp32/camera";   // MQTT topic for sending images
-
-WiFiClient espClient;
-PubSubClient client(espClient);
+const char *ssid = "H 08";
+const char *password = "000000000";
+const char *serverURL = "http://192.168.1.12:5000/predict";
 
 // Cài đặt độ sáng LED (0-255) - tăng từ 50 lên 200
 #define FLASH_BRIGHTNESS 200
@@ -71,7 +60,6 @@ void setup() {
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW); // Tắt LED ban đầu
   
-  // Kết nối WiFi
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -108,12 +96,12 @@ void setup() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_SXGA;    // Use SXGA (1280x1024) for higher resolution
-    config.jpeg_quality = 5;               // Better JPEG quality (lower value = higher quality)
+    config.frame_size = FRAMESIZE_VGA;    // Giảm xuống VGA (640x480) thay vì SXGA
+    config.jpeg_quality = 12;             // Tăng mức nén JPEG (số cao hơn = chất lượng thấp hơn)
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 10;
+    config.frame_size = FRAMESIZE_VGA;    // Dùng VGA cho cả 2 trường hợp
+    config.jpeg_quality = 15;             // Tăng mức nén JPEG
     config.fb_count = 1;
   }
 
@@ -130,15 +118,15 @@ void setup() {
     s->set_brightness(s, 1);
     
     // Tăng độ tương phản (giá trị từ -2 đến 2)
-    s->set_contrast(s, 2);
+    s->set_contrast(s, 1);
     
     // Tăng độ bão hòa màu (giá trị từ -2 đến 2)
-    s->set_saturation(s, 2);
+    s->set_saturation(s, 1);
     
     // Special FX (0 - No Effect, 1 - Negative, 2 - Grayscale, 3 - Red Tint, 4 - Green Tint, 5 - Blue Tint, 6 - Sepia)
     s->set_special_effect(s, 0);
     
-    // Cài đặt AWB (Auto White Balance) - rất quan trọng cho màu sắc chính xác
+    // Cài đặt AWB (Auto White Balance)
     s->set_whitebal(s, 1);
     s->set_awb_gain(s, 1);
     
@@ -172,9 +160,6 @@ void setup() {
   }
   
   Serial.println("Camera đã sẵn sàng với các cài đặt tối ưu!");
-
-  // Cấu hình MQTT
-  client.setServer(mqtt_server, mqtt_port);
 }
 
 // Bật đèn flash với độ sáng điều chỉnh được sử dụng ESP-IDF LEDC
@@ -208,71 +193,49 @@ bool savePhotoToSD(uint8_t *imageData, size_t imageSize) {
   return true;
 }
 
-void reconnect() {
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    String clientId = "ESP32CAM-";
-    clientId += String(random(0xffff), HEX);
-    
-    if (client.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
-      Serial.println("connected");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
-    }
-  }
-}
-
 bool sendPhoto(uint8_t *imageData, size_t imageSize) {
-  if (!client.connected()) {
-    reconnect();
-  }
-  
-  // Chia ảnh thành các phần nhỏ để gửi qua MQTT
-  const size_t chunkSize = 1024;  // Kích thước mỗi phần
-  size_t totalChunks = (imageSize + chunkSize - 1) / chunkSize;
-  
-  // Tạo JSON header
-  StaticJsonDocument<200> header;
-  header["total_chunks"] = totalChunks;
-  header["image_size"] = imageSize;
-  header["timestamp"] = millis();
-  
-  String headerStr;
-  serializeJson(header, headerStr);
-  
-  // Gửi header
-  if (!client.publish(mqtt_topic, headerStr.c_str())) {
-    Serial.println("Failed to send header");
+  HTTPClient http;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Failed to reconnect to WiFi. Cannot send image.");
     return false;
   }
   
-  // Gửi từng phần của ảnh
-  for (size_t i = 0; i < totalChunks; i++) {
-    size_t start = i * chunkSize;
-    size_t end = min(start + chunkSize, imageSize);
-    size_t currentChunkSize = end - start;
+  WiFiClient client;
+  http.begin(client, serverURL);
+  http.addHeader("Content-Type", "image/jpeg");
+  
+  // Tăng timeout và thêm retry logic
+  http.setConnectTimeout(15000);  // 15 giây
+  http.setTimeout(30000);        // 30 giây
+  
+  int httpResponseCode = http.POST(imageData, imageSize);
+  
+  if (httpResponseCode > 0) {
+    Serial.printf("Server response code: %d\n", httpResponseCode);
+    String response = http.getString();
     
-    // Tạo JSON cho mỗi phần
-    StaticJsonDocument<200> chunk;
-    chunk["chunk_index"] = i;
-    chunk["total_chunks"] = totalChunks;
-    chunk["data"] = base64::encode(&imageData[start], currentChunkSize);
+    // Parse JSON response
+    JsonDocument doc; // Adjust size as needed
+    DeserializationError error = deserializeJson(doc, response);
     
-    String chunkStr;
-    serializeJson(chunk, chunkStr);
-    
-    if (!client.publish(mqtt_topic, chunkStr.c_str())) {
-      Serial.println("Failed to send chunk");
-      return false;
+    if (!error) {
+      Serial.println("JSON response received:");
+      serializeJsonPretty(doc, Serial); // In ra đẹp, có xuống dòng
+    } else {
+      Serial.printf("Failed to parse JSON: %s\n", error.c_str());
     }
     
-    delay(10);  // Đợi một chút giữa các lần gửi
+    http.end();
+    return httpResponseCode == 200;
+  } else {
+    Serial.printf("Error sending image! Error code: %d\n", httpResponseCode);
+    if (httpResponseCode == -1) {
+      Serial.println("Could not connect to server. Check server URL and network connection.");
+    }
+    http.end();
+    return false;
   }
-  
-  return true;
 }
 
 void captureAndProcessPhoto() {
@@ -349,12 +312,12 @@ bool restartCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
   
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_SXGA;    // Use SXGA (1280x1024) for higher resolution
-    config.jpeg_quality = 5;               // Better JPEG quality
+    config.frame_size = FRAMESIZE_VGA;    // Giảm xuống VGA (640x480)
+    config.jpeg_quality = 12;             // Tăng mức nén JPEG
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 10;
+    config.frame_size = FRAMESIZE_VGA;    // Dùng VGA cho cả 2 trường hợp
+    config.jpeg_quality = 15;             // Tăng mức nén JPEG
     config.fb_count = 1;
   }
   
@@ -368,8 +331,8 @@ bool restartCamera() {
   sensor_t * s = esp_camera_sensor_get();
   if (s) {
     s->set_brightness(s, 1);
-    s->set_contrast(s, 2);
-    s->set_saturation(s, 2);
+    s->set_contrast(s, 1);
+    s->set_saturation(s, 1);
     s->set_special_effect(s, 0);
     s->set_whitebal(s, 1);
     s->set_awb_gain(s, 1);
@@ -392,11 +355,6 @@ bool restartCamera() {
 }
 
 void loop() {
-  if (!client.connected()) {
-    reconnect();
-  }
-  client.loop();
-  
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi mất kết nối! Đang kết nối lại...");
     WiFi.reconnect();
