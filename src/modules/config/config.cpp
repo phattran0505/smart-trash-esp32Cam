@@ -1,8 +1,14 @@
 #include "config.h"
 
 // WiFi credentials
-const char *WIFI_SSID = "H 08";
-const char *WIFI_PASSWORD = "000000000";
+const char *WIFI_SSID = "PTIT.HCM_CanBo"; // school 
+const char *WIFI_PASSWORD = "";
+
+// const char *WIFI_SSID = "Phat Tran 2"; // personal
+// const char *WIFI_PASSWORD = "phattran123";
+
+// const char *WIFI_SSID = "H 08"; // home
+// const char *WIFI_PASSWORD = "000000000";
 
 // MQTT Configuration
 const char* MQTT_SERVER = "x2b4961d.ala.us-east-1.emqxsl.com";
